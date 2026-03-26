@@ -14,7 +14,7 @@ import urllib.error
 MONITORED_MODELS = {
     "flash": {
         "main": "gemini-2.5-flash",
-        "fallbacks": ["gemini-2.0-flash", "gemini-2.5-pro"],
+        "fallbacks": ["gemini-2.5-pro"],
     }
 }
 
@@ -43,6 +43,24 @@ def get_available_models():
             name = name[len("models/"):]
         models.append(name)
     return models
+
+
+def test_model_call(model_id):
+    """モデルに実際にリクエストを送って動くか確認"""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={GEMINI_API_KEY}"
+    payload = json.dumps({"contents": [{"parts": [{"text": "OK"}]}]}).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return True
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return False
+        if e.code == 503:
+            return True  # 一時的過負荷、モデル自体は存在
+        return False
+    except Exception:
+        return True  # ネットワークエラーは判断保留
 
 
 def parse_version(model_name):
@@ -141,8 +159,9 @@ def main():
         print(f"\n--- カテゴリ: {category} ---")
         print(f"メインモデル: {main_model}")
 
-        # 1. メインモデルの有効性チェック
-        if main_model not in available:
+        # 1. メインモデルの有効性チェック（一覧 + 実呼び出し）
+        main_actually_works = main_model in available and test_model_call(main_model)
+        if not main_actually_works:
             # メインモデルが廃止された場合、フォールバックから次の候補を探す
             next_candidate = None
             for fb in fallbacks:
@@ -170,14 +189,14 @@ def main():
             alerts.append(f"🆕 新バージョン検出: {new_model}（現在: {main_model}）")
             print(f"🆕 新バージョン発見: {new_model}")
 
-        # 3. フォールバックモデルの有効性チェック
+        # 3. フォールバックモデルの有効性チェック（実呼び出し）
         for fb in fallbacks:
-            if fb not in available:
+            if fb not in available or not test_model_call(fb):
                 alerts.append(
-                    f"🗑️ フォールバック {fb} が廃止。"
+                    f"🗑️ フォールバック {fb} が廃止（実呼び出し404）。"
                     f"shared-env の GEMINI_FLASH_FALLBACKS から除去してください"
                 )
-                print(f"⚠️ フォールバック {fb} が見つかりません！")
+                print(f"⚠️ フォールバック {fb} は利用不可！")
             else:
                 print(f"✅ フォールバック {fb} は有効です")
 
