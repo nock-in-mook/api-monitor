@@ -5,6 +5,11 @@ on:
     # 毎日 UTC 0:00 = JST 9:00
     - cron: '0 0 * * *'
   workflow_dispatch: # 手動実行も可能
+    inputs:
+      test_notify:
+        description: 'テスト通知を送信する'
+        type: boolean
+        default: false
 
 jobs:
   check:
@@ -22,4 +27,5 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MONITOR_BOT_TOKEN: ${{ secrets.GEMINI_MONITOR_BOT_TOKEN }}
           GEMINI_MONITOR_CHAT_ID: ${{ secrets.GEMINI_MONITOR_CHAT_ID }}
+          TEST_NOTIFY: ${{ inputs.test_notify }}
         run: python check_models.py

@@ -193,6 +193,11 @@ def main():
             print("エラー: Telegram のチャットIDを取得できませんでした")
             # チャットIDが取れなくても問題の内容はログに出力済みなので終了コードは0
     else:
+        # 正常時もテスト通知を送る（--test フラグ or TEST_NOTIFY 環境変数）
+        if os.environ.get("TEST_NOTIFY") or "--test" in __import__("sys").argv:
+            chat_id = get_telegram_chat_id()
+            if chat_id:
+                send_telegram_message(chat_id, "✅ Geminiモデル監視テスト: 全モデル正常です。GitHub Actionsからの通知テスト成功。")
         print("\n✅ 全てのモデルが正常です。通知はスキップします。")
 
 
