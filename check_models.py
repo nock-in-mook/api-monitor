@@ -231,7 +231,7 @@ def main():
         print(f"\n{len(alerts)} 件の問題を検出")
     else:
         # 正常 → シンプルな一言通知
-        send_telegram_message(f"✅ API監視 正常 ({now})")
+        send_telegram_message(f"API全モデル正常（{now}）")
         print("\n✅ 全てのモデルが正常")
 
     # 生存報告
