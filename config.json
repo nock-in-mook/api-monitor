@@ -1,0 +1,28 @@
+{
+  "apps": {
+    "Homework_Rescue": {
+      "api": "gemini",
+      "models": {
+        "main": "gemini-2.5-flash",
+        "fallback": "gemini-2.5-pro"
+      },
+      "path": "Homework_Rescue/homework-rescue/worker/wrangler.toml"
+    },
+    "KANJI_HANTEI": {
+      "api": "gemini",
+      "models": {
+        "main": "gemini-2.5-flash",
+        "fallback": "gemini-2.0-flash"
+      },
+      "path": "KANJI_HANTEI/kanji_ocr.py"
+    },
+    "Personal_Secretary": {
+      "api": "gemini",
+      "models": {
+        "main": "gemini-2.5-flash",
+        "fallback": "gemini-2.0-flash"
+      },
+      "path": "Personal_Secretary/bot.py"
+    }
+  }
+}

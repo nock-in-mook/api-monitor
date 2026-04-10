@@ -1,15 +1,10 @@
-name: Gemini Model Check
+name: API Model Check
 
 on:
   schedule:
     # 毎日 UTC 0:00 = JST 9:00
     - cron: '0 0 * * *'
-  workflow_dispatch: # 手動実行も可能
-    inputs:
-      test_notify:
-        description: 'テスト通知を送信する'
-        type: boolean
-        default: false
+  workflow_dispatch:
 
 jobs:
   check:
@@ -22,10 +17,10 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Check Gemini models
+      - name: Check API models
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MONITOR_BOT_TOKEN: ${{ secrets.GEMINI_MONITOR_BOT_TOKEN }}
           GEMINI_MONITOR_CHAT_ID: ${{ secrets.GEMINI_MONITOR_CHAT_ID }}
-          TEST_NOTIFY: ${{ inputs.test_notify }}
+          HEALTHCHECKS_PING_URL: ${{ secrets.HEALTHCHECKS_PING_URL }}
         run: python check_models.py

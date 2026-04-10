@@ -1,7 +1,8 @@
 """
-Gemini モデル監視スクリプト
+API モデル監視スクリプト
 GitHub Actions で毎日実行し、モデルの有効性と新バージョンをチェックする。
-問題があれば Telegram に通知する。
+異常があれば詳細を、正常なら「正常」の一言を Telegram に通知する。
+最後に Healthchecks.io に生存報告を送る。
 """
 
 import os
@@ -9,19 +10,21 @@ import re
 import json
 import urllib.request
 import urllib.error
+from datetime import datetime, timezone, timedelta
 
-# --- 監視対象モデル定義 ---
-MONITORED_MODELS = {
-    "flash": {
-        "main": "gemini-2.5-flash",
-        "fallbacks": ["gemini-2.5-pro"],
-    }
-}
+# --- 設定ファイル読み込み ---
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(SCRIPT_DIR, "config.json"), encoding="utf-8") as f:
+    CONFIG = json.load(f)
 
 # --- 環境変数 ---
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 TELEGRAM_BOT_TOKEN = os.environ.get("GEMINI_MONITOR_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("GEMINI_MONITOR_CHAT_ID", "")
+HEALTHCHECKS_PING_URL = os.environ.get("HEALTHCHECKS_PING_URL", "")
+
+# --- 日本時間 ---
+JST = timezone(timedelta(hours=9))
 
 
 def get_available_models():
@@ -35,7 +38,6 @@ def get_available_models():
         print(f"API エラー: {e.code} {e.reason}")
         raise
 
-    # モデル名から "models/" プレフィックスを除去して返す
     models = []
     for m in data.get("models", []):
         name = m.get("name", "")
@@ -56,19 +58,13 @@ def test_model_call(model_id):
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return False
-        if e.code == 503:
-            return True  # 一時的過負荷、モデル自体は存在
-        return False
+        return True  # 503等は一時的、モデル自体は存在
     except Exception:
         return True  # ネットワークエラーは判断保留
 
 
 def parse_version(model_name):
-    """
-    モデル名からバージョン番号を抽出する。
-    例: gemini-2.5-flash -> (2, 5), gemini-3.0-pro -> (3, 0)
-    パースできない場合は None を返す。
-    """
+    """モデル名からバージョン番号を抽出する"""
     match = re.match(r"gemini-(\d+)\.(\d+)-", model_name)
     if match:
         return (int(match.group(1)), int(match.group(2)))
@@ -76,15 +72,11 @@ def parse_version(model_name):
 
 
 def detect_newer_versions(current_model, available_models):
-    """
-    現在のメインモデルより新しいバージョンがあるか検出する。
-    同じサフィックス（flash, pro等）のモデルのみ比較対象。
-    """
+    """現在のメインモデルより新しいバージョンがあるか検出する"""
     current_ver = parse_version(current_model)
     if current_ver is None:
         return []
 
-    # サフィックスを取得（例: "flash", "pro"）
     suffix_match = re.match(r"gemini-\d+\.\d+-(.+)", current_model)
     if not suffix_match:
         return []
@@ -92,31 +84,21 @@ def detect_newer_versions(current_model, available_models):
 
     newer = []
     for model in available_models:
-        # 同じサフィックスのモデルだけ比較
         if not model.endswith(f"-{suffix}"):
             continue
         ver = parse_version(model)
         if ver and ver > current_ver:
             newer.append(model)
 
-    # バージョン順にソート（新しい方が先）
     newer.sort(key=lambda m: parse_version(m), reverse=True)
     return newer
 
 
-def get_telegram_chat_id():
-    """固定のchat_idを返す（環境変数から取得）"""
-    if TELEGRAM_CHAT_ID:
-        return int(TELEGRAM_CHAT_ID)
-    print("警告: GEMINI_MONITOR_CHAT_ID が設定されていません")
-    return None
-
-
-def send_telegram_message(chat_id, text):
+def send_telegram_message(text):
     """Telegram にメッセージを送信する"""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = json.dumps({
-        "chat_id": chat_id,
+        "chat_id": TELEGRAM_CHAT_ID,
         "text": text,
         "parse_mode": "HTML",
     }, ensure_ascii=False).encode("utf-8")
@@ -126,98 +108,134 @@ def send_telegram_message(chat_id, text):
         with urllib.request.urlopen(req) as resp:
             result = json.loads(resp.read().decode("utf-8"))
             if result.get("ok"):
-                print(f"Telegram 通知送信成功")
+                print("Telegram 通知送信成功")
             else:
                 print(f"Telegram 通知送信失敗: {result}")
     except urllib.error.HTTPError as e:
         print(f"Telegram 送信エラー: {e.code} {e.reason}")
 
 
-def main():
-    """メイン処理"""
-    if not GEMINI_API_KEY:
-        print("エラー: GEMINI_API_KEY が設定されていません")
-        exit(1)
-    if not TELEGRAM_BOT_TOKEN:
-        print("エラー: GEMINI_MONITOR_BOT_TOKEN が設定されていません")
-        exit(1)
-    if not TELEGRAM_CHAT_ID:
-        print("エラー: GEMINI_MONITOR_CHAT_ID が設定されていません")
-        exit(1)
+def ping_healthchecks(status="success"):
+    """Healthchecks.io に生存報告を送る"""
+    if not HEALTHCHECKS_PING_URL:
+        print("Healthchecks.io URL未設定、スキップ")
+        return
 
+    url = HEALTHCHECKS_PING_URL
+    if status == "fail":
+        url += "/fail"
+
+    try:
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            print(f"Healthchecks.io ping 送信成功 ({status})")
+    except Exception as e:
+        print(f"Healthchecks.io ping 失敗: {e}")
+
+
+def check_gemini_models():
+    """Gemini モデルをチェックし、アラートのリストを返す"""
     print("Gemini モデル一覧を取得中...")
     available = get_available_models()
     print(f"取得したモデル数: {len(available)}")
 
-    # 通知メッセージを溜めるリスト
     alerts = []
+    # 監視対象モデルを config.json から収集（重複除去）
+    monitored = {}
+    for app_name, app_config in CONFIG["apps"].items():
+        if app_config["api"] != "gemini":
+            continue
+        models = app_config["models"]
+        main_model = models["main"]
+        fallback = models.get("fallback")
 
-    for category, config in MONITORED_MODELS.items():
-        main_model = config["main"]
-        fallbacks = config["fallbacks"]
+        if main_model not in monitored:
+            monitored[main_model] = {"apps": [], "fallbacks": {}}
+        monitored[main_model]["apps"].append(app_name)
+        if fallback:
+            monitored[main_model]["fallbacks"][fallback] = \
+                monitored[main_model]["fallbacks"].get(fallback, [])
+            monitored[main_model]["fallbacks"][fallback].append(app_name)
 
-        print(f"\n--- カテゴリ: {category} ---")
-        print(f"メインモデル: {main_model}")
+    for model, info in monitored.items():
+        apps = info["apps"]
+        apps_str = ", ".join(apps)
 
-        # 1. メインモデルの有効性チェック（一覧 + 実呼び出し）
-        main_actually_works = main_model in available and test_model_call(main_model)
-        if not main_actually_works:
-            # メインモデルが廃止された場合、フォールバックから次の候補を探す
-            next_candidate = None
-            for fb in fallbacks:
-                if fb in available:
-                    next_candidate = fb
-                    break
+        print(f"\n--- {model} (使用: {apps_str}) ---")
 
-            # 新しいバージョンがあればそちらを推奨
-            suffix_match = re.match(r"gemini-\d+\.\d+-(.+)", main_model)
-            suffix = suffix_match.group(1) if suffix_match else ""
-            newer_available = [m for m in available if re.match(rf"gemini-\d+\.\d+-{re.escape(suffix)}$", m)]
-            if newer_available:
-                newer_available.sort(key=lambda m: parse_version(m) or (0, 0), reverse=True)
-                next_candidate = newer_available[0]
-
-            recommendation = f" shared-env を以下に更新してください:\nexport GEMINI_FLASH_MODEL={next_candidate}" if next_candidate else " 代替モデルが見つかりません。手動で確認してください。"
-            alerts.append(f"🚨 {main_model} が廃止されました！{recommendation}")
-            print(f"⚠️ メインモデル {main_model} が見つかりません！")
+        # メインモデルの有効性チェック
+        works = model in available and test_model_call(model)
+        if not works:
+            alerts.append(
+                f"🚨 <b>{model}</b> が廃止されました！\n"
+                f"   影響アプリ: {apps_str}"
+            )
+            print(f"⚠️ {model} が利用不可！")
         else:
-            print(f"✅ メインモデル {main_model} は有効です")
+            print(f"✅ {model} は有効")
 
-        # 2. 新バージョンの検出
-        newer = detect_newer_versions(main_model, available)
+        # 新バージョンの検出
+        newer = detect_newer_versions(model, available)
         for new_model in newer:
-            alerts.append(f"🆕 新バージョン検出: {new_model}（現在: {main_model}）")
+            alerts.append(
+                f"🆕 新バージョン検出: <b>{new_model}</b>\n"
+                f"   現在: {model} → 影響アプリ: {apps_str}"
+            )
             print(f"🆕 新バージョン発見: {new_model}")
 
-        # 3. フォールバックモデルの有効性チェック（実呼び出し）
-        for fb in fallbacks:
-            if fb not in available or not test_model_call(fb):
+        # フォールバックのチェック
+        for fallback, fb_apps in info["fallbacks"].items():
+            fb_apps_str = ", ".join(fb_apps)
+            if fallback not in available or not test_model_call(fallback):
                 alerts.append(
-                    f"🗑️ フォールバック {fb} が廃止（実呼び出し404）。"
-                    f"shared-env の GEMINI_FLASH_FALLBACKS から除去してください"
+                    f"🗑️ フォールバック <b>{fallback}</b> が廃止\n"
+                    f"   影響アプリ: {fb_apps_str}"
                 )
-                print(f"⚠️ フォールバック {fb} は利用不可！")
+                print(f"⚠️ フォールバック {fallback} は利用不可！")
             else:
-                print(f"✅ フォールバック {fb} は有効です")
+                print(f"✅ フォールバック {fallback} は有効")
 
-    # 通知の送信
+    return alerts
+
+
+def main():
+    """メイン処理"""
+    # 環境変数チェック
+    missing = []
+    if not GEMINI_API_KEY:
+        missing.append("GEMINI_API_KEY")
+    if not TELEGRAM_BOT_TOKEN:
+        missing.append("GEMINI_MONITOR_BOT_TOKEN")
+    if not TELEGRAM_CHAT_ID:
+        missing.append("GEMINI_MONITOR_CHAT_ID")
+    if missing:
+        print(f"エラー: 環境変数未設定: {', '.join(missing)}")
+        exit(1)
+
+    now = datetime.now(JST).strftime("%m/%d %H:%M")
+
+    try:
+        alerts = check_gemini_models()
+    except Exception as e:
+        # API自体にアクセスできない場合
+        error_msg = f"❌ <b>API監視エラー</b> ({now})\n\n{e}"
+        send_telegram_message(error_msg)
+        ping_healthchecks("fail")
+        raise
+
     if alerts:
-        print(f"\n{len(alerts)} 件の問題を検出しました。Telegram に通知します...")
-        chat_id = get_telegram_chat_id()
-        if chat_id:
-            header = "<b>⚡ Gemini モデル監視レポート</b>\n\n"
-            message = header + "\n\n".join(alerts)
-            send_telegram_message(chat_id, message)
-        else:
-            print("エラー: Telegram のチャットIDを取得できませんでした")
-            # チャットIDが取れなくても問題の内容はログに出力済みなので終了コードは0
+        # 異常あり → 詳細通知
+        header = f"⚡ <b>API監視レポート</b> ({now})\n\n"
+        message = header + "\n\n".join(alerts)
+        send_telegram_message(message)
+        print(f"\n{len(alerts)} 件の問題を検出")
     else:
-        # 正常時もテスト通知を送る（--test フラグ or TEST_NOTIFY 環境変数）
-        if os.environ.get("TEST_NOTIFY") or "--test" in __import__("sys").argv:
-            chat_id = get_telegram_chat_id()
-            if chat_id:
-                send_telegram_message(chat_id, "✅ Geminiモデル監視テスト: 全モデル正常です。GitHub Actionsからの通知テスト成功。")
-        print("\n✅ 全てのモデルが正常です。通知はスキップします。")
+        # 正常 → シンプルな一言通知
+        send_telegram_message(f"✅ API監視 正常 ({now})")
+        print("\n✅ 全てのモデルが正常")
+
+    # 生存報告
+    ping_healthchecks("success" if not alerts else "fail")
 
 
 if __name__ == "__main__":
