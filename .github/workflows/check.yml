@@ -2,8 +2,8 @@ name: API Model Check
 
 on:
   schedule:
-    # 毎日 UTC 0:00 = JST 9:00
-    - cron: '0 0 * * *'
+    # 毎日 UTC 3:00 = JST 12:00
+    - cron: '0 3 * * *'
   workflow_dispatch:
 
 jobs:
